@@ -34,9 +34,23 @@ D:\nodejs\npm.cmd pack --pack-destination ..\..\migration\dist
 
 装好后：设置 → 左侧出现「**MCP 服务器**」（order 30）。改代码后的迭代流程：改源码 → 递增版本号 → 重新 `npm pack` → 重装 tarball。
 
-**当前状态（2026-10-18）**：已装入 desktop profile（`dsh-mcp-manager@0.1.1`，`application: applied` 热生效），
+**当前状态（2026-10-18）**：已装入 desktop profile（`dsh-mcp-manager@0.1.3`，`application: applied` 热生效），
 host 条目与 `settings.section` 注册均已在运行宿主中确认；真机诊断快照见
 `<profile>/data/mcp-manager/snapshot-*.json`。详细证据与待验证项见 `docs/mcp-manager/verification.md`。
+
+## 环境变量桥（0.1.3）
+
+有些 MCP 行用 `!!js process.env.X` 引用凭据，但宿主进程环境可能拿不到（例如 DSH 由旧启动器拉起）。
+插件在 `apply()` **最先**读 `<profile>/data/mcp-manager/secrets.json`，把**尚未设置**的键注入 `process.env`：
+
+```json
+{ "PLAYWRIGHT_MCP_EXTENSION_TOKEN": "…" }
+```
+
+- 只读该文件（插件不创建/不改）；键名须 `^[A-Za-z_][A-Za-z0-9_]*$`、值须非空字符串；非法项跳过并在诊断里列出；
+- 已存在的环境变量不覆盖；坏 JSON/读失败只 warn，不阻塞插件；
+- `GET /servers` 顶层与诊断快照 `backend.envBridge` 只回**键名与状态**，绝不回显值；
+- Windows 上建议用 ACL 限制该文件仅当前用户可读写（`icacls secrets.json /inheritance:r /grant:r "<user>:(R,W)"`）。
 
 ## 结构
 
@@ -50,6 +64,7 @@ host 条目与 `settings.section` 注册均已在运行宿主中确认；真机�
 | `lib/transfer.js` | 导入/导出 |
 | `lib/diagnostics.js` | 配置体检 |
 | `lib/security.js` | `requestRejection`、POST/JSON/64KiB/no-store |
+| `lib/env-bridge.js` | 环境变量桥：`<profile>/data/mcp-manager/secrets.json` → `process.env`（只补缺失键） |
 | `client/client.js` | 浏览器设置页（`settings.section`，手写 CJS，无构建） |
 | `scripts/smoke.mjs` | 离线断言（不依赖宿主） |
 
