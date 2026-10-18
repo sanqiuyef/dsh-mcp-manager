@@ -52,6 +52,31 @@ host 条目与 `settings.section` 注册均已在运行宿主中确认；真机�
 - `GET /servers` 顶层与诊断快照 `backend.envBridge` 只回**键名与状态**，绝不回显值；
 - Windows 上建议用 ACL 限制该文件仅当前用户可读写（`icacls secrets.json /inheritance:r /grant:r "<user>:(R,W)"`）。
 
+## 设置导航图标（0.1.4，临时装饰）
+
+设置面板左侧导航的图标由外壳写死：`@deepseek-ai/dsh-client-ui-settings-general` 的 `navIcon(id)` 只认
+`account / models / agent-presets / plugins / archived-sessions`，**未知 id 一律兜底成齿轮**；而
+`settings.section` 的注册参数只有 `id / order / label`，插件没地方声明图标。于是本页（id `mcp-manager`）
+在导航里和「设置」入口共用一个齿轮——不符合实际情况。
+
+为此 `client/client.js` 在 `apply()` 里加了一个**防御式装饰** effect（`installNavGlyph`）：设置面板出现时，
+只认 `[data-shortcut-modal="settings"]` 内、`span.navLabel` 文案与本插件 zh/en `nav` 文案完全相等的那一行，
+把兜底齿轮 `display:none`，并在其前插入本插件自己的 16×16「服务器机架」图形（`viewBox 0 0 16 16`、
+`stroke-width 1.3`，与 DSH Medium 图标同规格）。DOM 结构不符合预期就什么都不做（保留原齿轮、不抛错）；
+缺 `document` / `MutationObserver` / `createElementNS` 的环境直接返回空清理函数，一行 DOM 都不碰。
+effect 清理器会删除插入的图形、恢复齿轮显示、断开 observer。
+
+**为什么要有这段代码**：这不是插件的正常功能，而是对外壳「导航图标按 id 写死」这一实现的适配；
+它只碰自己的那一行、可整体删除，并且不修改 DSH 安装目录或 `app.asar`。
+
+**移除条件（重要）**：一旦 `settings.section` 的注册参数支持 `icon`，就应**整段删除**
+`NAV_PANEL_SELECTOR` / `NAV_GLYPH_ATTR` / `NAV_GLYPH` / `navGlyphElement` / `decorateNavRow` /
+`installNavGlyph` 这 6 个定义与 `apply()` 里那个 `settings-nav glyph` effect，改为在注册参数里声明 `icon`
+（给上游的最小补丁草案见工作区根的 `docs/nav-icon/设置导航图标改动规范.md` 附录，该目录不在本包内）。
+
+**外观未经浏览器验证**：本会话拿不到已认证页面（`http://127.0.0.1:61579` 直连 401）。
+`client/selfcheck.mjs` 只离线断言「只装饰自己那一行 + 清理能还原」的逻辑，**不是视觉验证**。
+
 ## 结构
 
 | 路径 | 说明 |

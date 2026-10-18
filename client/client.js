@@ -1164,6 +1164,137 @@ window.__ModuleLoader__.load({
     }
 
     /* ------------------------------------------------------------------ *
+     * Settings-nav glyph
+     *
+     * DSH's settings shell picks its nav glyph by section id and falls back to
+     * the generic settings gear for ids it does not know
+     * (`dsh-client-ui-settings-general`: `navIcon(id)`), and
+     * `settings.section` exposes no `icon` option — so this page would render a
+     * second gear right beside the Settings row's own gear. Until the harness
+     * ships an icon option, this decorator swaps that fallback glyph for this
+     * plugin's own artwork.
+     *
+     * Deliberately defensive: an unexpected panel shape leaves the shipped gear
+     * untouched, a missing DOM keeps the plugin bootable, and the effect
+     * disposer restores the original nodes. Delete it — together with
+     * NAV_PANEL_SELECTOR / NAV_GLYPH_ATTR / NAV_GLYPH — once
+     * `settings.section` accepts an icon.
+     * ------------------------------------------------------------------ */
+
+    const NAV_PANEL_SELECTOR = '[data-shortcut-modal="settings"]'
+    const NAV_GLYPH_ATTR = 'data-' + PLUGIN_ID + '-nav-glyph'
+
+    /* 两台"机架单元"：状态灯 + 槽位线，表达"已连接的 MCP 服务器"。 */
+    const NAV_GLYPH = [
+      ['rect', { x: 2.7, y: 2.7, width: 10.6, height: 4.3, rx: 1.5 }],
+      ['path', { d: 'M4.9 4.85h0.01' }],
+      ['path', { d: 'M7.4 4.85h3.7' }],
+      ['rect', { x: 2.7, y: 9, width: 10.6, height: 4.3, rx: 1.5 }],
+      ['path', { d: 'M4.9 11.15h0.01' }],
+      ['path', { d: 'M7.4 11.15h3.7' }],
+    ]
+
+    function navGlyphElement(doc) {
+      const svg = doc.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('width', '16')
+      svg.setAttribute('height', '16')
+      svg.setAttribute('viewBox', '0 0 16 16')
+      svg.setAttribute('fill', 'none')
+      svg.setAttribute('stroke', 'currentColor')
+      svg.setAttribute('stroke-width', '1.3')      // == ICON_MEDIUM_STROKE
+      svg.setAttribute('stroke-linecap', 'round')
+      svg.setAttribute('stroke-linejoin', 'round')
+      svg.setAttribute('aria-hidden', 'true')
+      svg.setAttribute('focusable', 'false')
+      svg.setAttribute(NAV_GLYPH_ATTR, '1')
+      NAV_GLYPH.forEach(function (spec) {
+        const node = doc.createElementNS('http://www.w3.org/2000/svg', spec[0])
+        Object.keys(spec[1]).forEach(function (name) {
+          node.setAttribute(name, String(spec[1][name]))
+        })
+        svg.appendChild(node)
+      })
+      return svg
+    }
+
+    /**
+     * Hide the fallback gear of this plugin's own settings-nav row and put our
+     * glyph in its place. Returns how many rows are decorated; a row that is
+     * already ours is only re-asserted when the shell re-rendered its gear, so
+     * the mutation observer stays quiet.
+     */
+    function decorateNavRow(doc, labels) {
+      const panel = doc.querySelector(NAV_PANEL_SELECTOR)
+      if (!panel) return 0
+      const rows = panel.querySelectorAll('nav button')
+      let decorated = 0
+      for (let i = 0; i < rows.length; i += 1) {
+        const row = rows[i]
+        const mine = row.querySelector('svg[' + NAV_GLYPH_ATTR + ']')
+        // Shipped row: [svg gear, span label]. Decorated row: [our svg, svg
+        // gear, span label] — React keeps its own gear node, we only hide it.
+        let gear
+        let label
+        if (mine && row.children.length === 3) {
+          gear = row.children[1]
+          label = row.children[2]
+        } else if (row.children.length === 2) {
+          gear = row.children[0]
+          label = row.children[1]
+        } else {
+          continue
+        }
+        if (String(gear.tagName).toLowerCase() !== 'svg') continue
+        if (!mine && labels.indexOf(String(label.textContent).trim()) < 0) continue
+        if (!mine) {
+          const glyph = navGlyphElement(doc)
+          glyph.setAttribute('class', gear.getAttribute('class') || '')
+          row.insertBefore(glyph, gear)
+          row.setAttribute(NAV_GLYPH_ATTR, '1')
+        }
+        if (gear.style.display !== 'none') gear.style.display = 'none'
+        decorated += 1
+      }
+      return decorated
+    }
+
+    /**
+     * Keep this plugin's nav glyph in place while the settings panel lives.
+     * Returns a disposer that restores the shipped gear and removes our nodes.
+     */
+    function installNavGlyph(labels) {
+      if (typeof document === 'undefined' || !document.body) return function () {}
+      if (typeof MutationObserver === 'undefined') return function () {}
+      if (typeof document.createElementNS !== 'function') return function () {}
+      const doc = document
+      const run = function () {
+        try {
+          decorateNavRow(doc, labels)
+        } catch (error) {
+          /* A presentation nicety must never break the settings shell. */
+        }
+      }
+      run()
+      const observer = new MutationObserver(run)
+      // childList over the whole tree costs one attribute query per mutation
+      // batch and is the only way to notice the portaled panel appearing.
+      observer.observe(doc.body, { childList: true, subtree: true })
+      return function dispose() {
+        observer.disconnect()
+        const marked = doc.querySelectorAll('[' + NAV_GLYPH_ATTR + ']')
+        for (let i = 0; i < marked.length; i += 1) {
+          const row = marked[i]
+          if (String(row.tagName).toLowerCase() !== 'button') continue
+          const glyph = row.querySelector('svg[' + NAV_GLYPH_ATTR + ']')
+          if (glyph && glyph.parentNode) glyph.parentNode.removeChild(glyph)
+          const gear = row.children[0]
+          if (gear && gear.style && gear.style.display === 'none') gear.style.display = ''
+          row.removeAttribute(NAV_GLYPH_ATTR)
+        }
+      }
+    }
+
+    /* ------------------------------------------------------------------ *
      * Primitive controls (host theme variables only)
      * ------------------------------------------------------------------ */
 
@@ -3413,6 +3544,9 @@ window.__ModuleLoader__.load({
       ctx.effect(function () {
         return ensureStyles()
       }, PLUGIN_ID + ': styles')
+      ctx.effect(function () {
+        return installNavGlyph([zh.nav, en.nav])
+      }, PLUGIN_ID + ': settings-nav glyph')
       ctx.slots.inject('settings.section', function () {
         return ctx.slots.register(
           {

@@ -19,7 +19,14 @@
  *     framework renders it, not this module);
  *  6. `apply()` installs the self-contained stylesheet and never fetches;
  *  7. the same flow works in an environment with no `document` at all
- *     (defensive boot, e.g. non-browser hosts).
+ *     (defensive boot, e.g. non-browser hosts);
+ *  8. `apply()` registers a `settings-nav glyph` effect after the styles
+ *     effect, and that effect returns a disposer;
+ *  9. without `MutationObserver` the decorator touches no DOM at all (the
+ *     first `querySelector` stays the style dedupe selector);
+ * 10. against a minimal settings panel it decorates only this plugin's own
+ *     nav row (hiding the shipped gear, inserting one 16×16 glyph) and the
+ *     disposer restores that row untouched.
  *
  * Usage:  D:\nodejs\node.exe client/selfcheck.mjs
  */
@@ -179,11 +186,198 @@ function createSlotsService(log) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Minimal DOM stub for the settings-nav decorator
+ *
+ * Implements exactly what `installNavGlyph` / `decorateNavRow` (and the
+ * stylesheet guard) call: attributes, children, inline style and a
+ * descendant search. It is deliberately not a renderer and lays nothing out.
+ * ------------------------------------------------------------------ */
+
+function parseSimpleSelector(part) {
+  const match = /^([a-zA-Z]*)(?:\[([^\]]+)\])?$/.exec(part)
+  if (!match) throw new Error('unsupported selector: ' + part)
+  let attr = null
+  if (match[2]) {
+    const pair = /^([^=]+)(?:=(.*))?$/.exec(match[2])
+    attr = {
+      name: pair[1],
+      value: pair[2] === undefined ? null : pair[2].replace(/^["']|["']$/g, ''),
+    }
+  }
+  return { tag: match[1] ? match[1].toUpperCase() : null, attr: attr }
+}
+
+function simpleSelectorMatches(node, part) {
+  if (!node || !node.tagName) return false
+  if (part.tag && node.tagName !== part.tag) return false
+  if (part.attr) {
+    const value = node.getAttribute(part.attr.name)
+    if (value === null) return false
+    if (part.attr.value !== null && value !== part.attr.value) return false
+  }
+  return true
+}
+
+/** `tag`, `[attr]`, `[attr="value"]`, `tag[attr]`, and `a b` descendants. */
+function selectorMatches(node, selector) {
+  const parts = String(selector).trim().split(/\s+/).map(parseSimpleSelector)
+  let current = node
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    if (i === parts.length - 1) {
+      if (!simpleSelectorMatches(current, parts[i])) return false
+      continue
+    }
+    current = current.parentNode
+    while (current && !simpleSelectorMatches(current, parts[i])) current = current.parentNode
+    if (!current) return false
+  }
+  return true
+}
+
+function createStubElement(tag) {
+  const element = {
+    tagName: String(tag).toUpperCase(),
+    children: [],
+    parentNode: null,
+    dataset: {},
+    style: {},
+    attributes: {},
+    textContent: '',
+    setAttribute(name, value) {
+      element.attributes[String(name)] = String(value)
+    },
+    getAttribute(name) {
+      const key = String(name)
+      return Object.prototype.hasOwnProperty.call(element.attributes, key) ? element.attributes[key] : null
+    },
+    hasAttribute(name) {
+      return Object.prototype.hasOwnProperty.call(element.attributes, String(name))
+    },
+    removeAttribute(name) {
+      delete element.attributes[String(name)]
+    },
+    appendChild(child) {
+      child.parentNode = element
+      element.children.push(child)
+      return child
+    },
+    insertBefore(child, reference) {
+      const index = element.children.indexOf(reference)
+      child.parentNode = element
+      if (index < 0) element.children.push(child)
+      else element.children.splice(index, 0, child)
+      return child
+    },
+    removeChild(child) {
+      const index = element.children.indexOf(child)
+      if (index >= 0) element.children.splice(index, 1)
+      child.parentNode = null
+      return child
+    },
+    descendants() {
+      const out = []
+      const visit = function (node) {
+        for (let i = 0; i < node.children.length; i += 1) {
+          out.push(node.children[i])
+          visit(node.children[i])
+        }
+      }
+      visit(element)
+      return out
+    },
+    querySelectorAll(selector) {
+      return element.descendants().filter(function (node) {
+        return selectorMatches(node, selector)
+      })
+    },
+    querySelector(selector) {
+      const found = element.querySelectorAll(selector)
+      return found.length ? found[0] : null
+    },
+  }
+  return element
+}
+
+/**
+ * A settings panel shaped like the shell's: one nav row whose label is this
+ * plugin's zh nav copy and one decoy row. `labels` is [own, decoy].
+ */
+function createNavDomStub(labels) {
+  const body = createStubElement('body')
+  const panel = createStubElement('div')
+  panel.setAttribute('data-shortcut-modal', 'settings')
+  const nav = createStubElement('nav')
+  body.appendChild(panel)
+  panel.appendChild(nav)
+
+  function navRow(labelText) {
+    const button = createStubElement('button')
+    const gear = createStubElement('svg')
+    gear.setAttribute('class', 'navIcon')
+    const label = createStubElement('span')
+    label.textContent = labelText
+    button.appendChild(gear)
+    button.appendChild(label)
+    nav.appendChild(button)
+    return { button: button, gear: gear, label: label }
+  }
+
+  const mine = navRow(labels[0])
+  const decoy = navRow(labels[1])
+
+  const document = {
+    body: body,
+    head: createStubElement('head'),
+    createElement(tag) {
+      return createStubElement(tag)
+    },
+    createElementNS(namespace, tag) {
+      return createStubElement(tag)
+    },
+    querySelector(selector) {
+      return body.querySelector(selector)
+    },
+    querySelectorAll(selector) {
+      return body.querySelectorAll(selector)
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  }
+
+  const observers = []
+  class MutationObserver {
+    constructor(callback) {
+      this.callback = callback
+      observers.push(this)
+    }
+    observe(target, options) {
+      this.target = target
+      this.options = options
+    }
+    disconnect() {
+      this.disconnected = true
+    }
+  }
+
+  return {
+    document: document,
+    MutationObserver: MutationObserver,
+    body: body,
+    panel: panel,
+    nav: nav,
+    mine: mine,
+    decoy: decoy,
+    observers: observers,
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Sandbox runner
  * ------------------------------------------------------------------ */
 
 function runSandbox(options) {
   const config = options || {}
+  let navDom = null
   const log = {
     loads: [],
     injections: [],
@@ -229,26 +423,32 @@ function runSandbox(options) {
   }
 
   if (config.document !== false) {
-    const head = {
-      appendChild(node) {
-        log.dom.push(['appendChild'])
-        node.parentNode = head
-        return node
-      },
-    }
-    sandbox.document = {
-      querySelector(selector) {
-        log.dom.push(['querySelector', selector])
-        return null
-      },
-      createElement(tag) {
-        log.dom.push(['createElement', tag])
-        return { tagName: String(tag).toUpperCase(), dataset: {}, textContent: '', parentNode: null }
-      },
-      head: head,
-      body: head,
-      addEventListener() {},
-      removeEventListener() {},
+    if (config.navDom === true) {
+      navDom = createNavDomStub(config.navLabels || ['MCP 服务器', 'MCP Servers'])
+      sandbox.document = navDom.document
+      sandbox.MutationObserver = navDom.MutationObserver
+    } else {
+      const head = {
+        appendChild(node) {
+          log.dom.push(['appendChild'])
+          node.parentNode = head
+          return node
+        },
+      }
+      sandbox.document = {
+        querySelector(selector) {
+          log.dom.push(['querySelector', selector])
+          return null
+        },
+        createElement(tag) {
+          log.dom.push(['createElement', tag])
+          return { tagName: String(tag).toUpperCase(), dataset: {}, textContent: '', parentNode: null }
+        },
+        head: head,
+        body: head,
+        addEventListener() {},
+        removeEventListener() {},
+      }
     }
   }
 
@@ -282,7 +482,7 @@ function runSandbox(options) {
     locale: locale,
   }
 
-  return { exported: exported, ctx: ctx, log: log, locale: locale, loadState: loadState, definition: definition }
+  return { exported: exported, ctx: ctx, log: log, locale: locale, loadState: loadState, definition: definition, navDom: navDom }
 }
 
 /* ------------------------------------------------------------------ *
@@ -398,6 +598,93 @@ check('effect cleanups are registered for dictionaries and styles', () => {
   const disposers = main.log.effects.filter((effect) => typeof effect.disposer === 'function')
   assert(disposers.length >= 1, 'no effect returned a disposer')
   return labels.join(' | ')
+})
+
+check('apply() registers the settings-nav glyph effect after the styles effect', () => {
+  assert(main, 'module did not load')
+  const labels = main.log.effects.map((effect) => effect.label)
+  const glyphEffects = main.log.effects.filter((effect) => String(effect.label).indexOf('settings-nav glyph') >= 0)
+  assert(glyphEffects.length === 1, 'expected exactly one settings-nav glyph effect, got ' + glyphEffects.length)
+  assert(typeof glyphEffects[0].disposer === 'function', 'the settings-nav glyph effect returned no disposer')
+  const stylesAt = labels.indexOf(PLUGIN_ID + ': styles')
+  const glyphAt = labels.indexOf(glyphEffects[0].label)
+  assert(stylesAt >= 0, 'the styles effect is missing')
+  assert(stylesAt < glyphAt, 'the glyph effect must be registered after the styles effect: ' + labels.join(' | '))
+  return glyphEffects[0].label
+})
+
+check('the nav glyph decorator touches no DOM without MutationObserver', () => {
+  assert(main, 'module did not load')
+  const query = main.log.dom.filter((call) => call[0] === 'querySelector')
+  assert(query.length > 0, 'the stylesheet guard never queried the document')
+  assert(
+    query[0][1].indexOf('data-plugin-css') >= 0,
+    'the first DOM query is no longer the style dedupe selector: ' + String(query[0][1]),
+  )
+  const panelQueries = main.log.dom.filter(
+    (call) => call[0] === 'querySelector' && String(call[1]).indexOf('data-shortcut-modal') >= 0,
+  )
+  assert(panelQueries.length === 0, 'the decorator queried the settings panel without MutationObserver')
+  const glyphEffects = main.log.effects.filter((effect) => String(effect.label).indexOf('settings-nav glyph') >= 0)
+  assert(glyphEffects.length === 1, 'the settings-nav glyph effect is missing')
+  const before = main.log.dom.length
+  glyphEffects[0].disposer()
+  assert(main.log.dom.length === before, 'the glyph disposer touched the DOM without MutationObserver')
+  return 'first selector = style dedupe; 0 panel queries; disposer is a no-op'
+})
+
+check("decorates only this plugin's nav row, and the disposer restores it", () => {
+  const own = 'MCP 服务器'
+  const decoy = '通用设置'
+  const run = runSandbox({ navDom: true, navLabels: [own, decoy] })
+  run.exported.apply(run.ctx)
+  const bag = run.locale.dictionaries.get('mcpManager')
+  assert(bag && bag.zh && bag.zh.nav === own, 'the stub label drifted from the plugin dictionary: ' + String(bag && bag.zh && bag.zh.nav))
+
+  const dom = run.navDom
+  const attr = 'data-' + PLUGIN_ID + '-nav-glyph'
+  const row = dom.mine.button
+  const gear = dom.mine.gear
+
+  assert(row.children.length === 3, 'expected [glyph, gear, label] in the decorated row, got ' + row.children.length)
+  const glyph = row.children[0]
+  assert(glyph.tagName === 'SVG' && glyph.hasAttribute(attr), 'the first child is not the inserted marker svg')
+  assert(row.children[1] === gear, 'the shipped gear is no longer the second child')
+  assert(row.children[2] === dom.mine.label, 'the nav label is no longer the third child')
+  assert(row.querySelectorAll('svg[' + attr + ']').length === 1, 'expected exactly one glyph svg in the row')
+  assert(glyph.parentNode === row, 'the glyph is not attached to the row')
+  assert(glyph.getAttribute('viewBox') === '0 0 16 16', 'viewBox mismatch: ' + String(glyph.getAttribute('viewBox')))
+  assert(glyph.getAttribute('stroke-width') === '1.3', 'stroke-width mismatch: ' + String(glyph.getAttribute('stroke-width')))
+  assert(glyph.getAttribute('width') === '16' && glyph.getAttribute('height') === '16', 'the glyph is not 16x16')
+  assert(glyph.getAttribute('class') === 'navIcon', 'the glyph did not inherit the gear class: ' + String(glyph.getAttribute('class')))
+  const NAV_GLYPH_CHILDREN = 6
+  assert(glyph.children.length === NAV_GLYPH_CHILDREN, 'glyph child count mismatch: ' + glyph.children.length)
+  assert(gear.style.display === 'none', 'the shipped gear was not hidden: ' + String(gear.style.display))
+  assert(row.getAttribute(attr) === '1', 'the decorated row was not marked')
+
+  const decoyRow = dom.decoy.button
+  assert(decoyRow.children.length === 2, 'the decoy row was modified: ' + decoyRow.children.length + ' children')
+  assert(decoyRow.children[0] === dom.decoy.gear, 'the decoy gear moved')
+  assert(decoyRow.children[0].style.display !== 'none', 'the decoy gear was hidden')
+  assert(decoyRow.getAttribute(attr) === null, 'the decoy row was marked')
+  assert(decoyRow.querySelectorAll('svg[' + attr + ']').length === 0, 'a glyph was inserted into the decoy row')
+
+  assert(dom.observers.length === 1, 'expected exactly one MutationObserver, got ' + dom.observers.length)
+  const observer = dom.observers[0]
+  assert(observer.target === dom.body, 'the observer does not watch document.body')
+  assert(observer.options && observer.options.childList === true && observer.options.subtree === true, 'observer options mismatch')
+
+  const glyphEffects = run.log.effects.filter((effect) => String(effect.label).indexOf('settings-nav glyph') >= 0)
+  assert(glyphEffects.length === 1 && typeof glyphEffects[0].disposer === 'function', 'no disposer was registered for the glyph effect')
+  glyphEffects[0].disposer()
+
+  assert(observer.disconnected === true, 'the observer was not disconnected')
+  assert(row.children.length === 2, 'the glyph was not removed from the row: ' + row.children.length)
+  assert(glyph.parentNode === null, 'the removed glyph still has a parent')
+  assert(row.children[0] === gear, 'the first child is not the shipped gear again')
+  assert(gear.style.display === '', 'the gear display was not restored: ' + String(gear.style.display))
+  assert(row.getAttribute(attr) === null, 'the row marker survived the disposer')
+  return 'decorated 1 of 2 rows, decoy untouched, disposer restored the row'
 })
 
 check('boots and applies without a document (non-browser host)', () => {
