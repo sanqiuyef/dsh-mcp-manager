@@ -41,7 +41,9 @@ npm pack          # 生成 dsh-mcp-manager-<version>.tgz
 - **Web GUI**：设置 → 插件 → 安装，选中刚生成的 `.tgz`；
 - **宿主工具**：`plugin_manager({ action: 'install_bundle', target: '<abs>/dsh-mcp-manager-0.1.6.tgz' })`；
 - **profile bundle 安装入口**：本包自带 `cordis.patch.yml`（`package.json` 的 `dsh.bundle.patch`），
-  经 bundle 方式安装后会自动挂载 host 路由与设置页。
+  经 bundle 方式安装后会自动挂载 host 路由与设置页；
+- **不自己构建**：直接从本仓库的 **Releases** 页下载已打好的 `dsh-mcp-manager-<version>.tgz`，
+  再按上面任一方式安装。
 
 装好后：设置 → 左侧出现「**MCP 服务器**」（order 30）。迭代流程：改源码 → 递增版本号 → 重新 `npm pack` → 重装 tarball。
 
@@ -123,6 +125,8 @@ effect 清理器会删除插入的图形、恢复齿轮显示、断开 observer�
 | `client/client.js` | 浏览器设置页（`settings.section`，手写 CJS，无构建） |
 | `client/selfcheck.mjs` | 浏览器半区离线自检（假宿主） |
 | `scripts/smoke.mjs` | host 半区离线断言（不依赖宿主） |
+
+源码注释里出现的 `contract §N` 指本插件 HTTP 契约的内部小节编号（无外部文档，路由表见 `lib/index.js`）。
 
 ## 已知限制
 
