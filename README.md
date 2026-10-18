@@ -77,6 +77,25 @@ effect 清理器会删除插入的图形、恢复齿轮显示、断开 observer�
 **外观未经浏览器验证**：本会话拿不到已认证页面（`http://127.0.0.1:61579` 直连 401）。
 `client/selfcheck.mjs` 只离线断言「只装饰自己那一行 + 清理能还原」的逻辑，**不是视觉验证**。
 
+## 主题 token 修正（0.1.5）
+
+设置页原先引用了两个 DSH 主题里**并不存在**的变量——CSS 变量名写错不会报错，只会让 `var()` 在计算值阶段
+失效，`color` / `font-family` 静默回退成继承值（错误态只剩文案、危险按钮与普通按钮同色）：
+
+| 原引用 | 主题里的正确 token | 本页处数 |
+|---|---|---|
+| `--dsw-alias-label-error` | `--dsw-alias-state-error-primary`（浅色 `--dsw-static-red-600` / 深色 `--dsw-static-red-400`；宿主设置页自用同款） | 13 |
+| `--dsw-font-mono` | `--ds-font-family-code`（主题的等宽栈） | 9 |
+
+现已全部替换为宿主 token，未引入字面量兜底。核对方式（可重复，升级 DSH 后请重跑）：
+
+```powershell
+D:\nodejs\node.exe scripts\lint-theme-tokens.mjs
+```
+
+该工作区脚本把两个插件 `client.js` 里的每个 `var(--…)` 与 `_recon/asar`（= 本机 `app.asar` 解包副本）中
+真实存在的 token 定义逐一比对，出现未定义的名字即非零退出（本次修复前它会报出上面这两个）。
+
 ## 结构
 
 | 路径 | 说明 |
