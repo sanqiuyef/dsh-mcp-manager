@@ -31,11 +31,12 @@
  *   M. the real profile       — read-only dry run (skipped when unreachable)
  *   N. route wiring           — the eight contract routes end to end
  *   O. startup snapshot       — written, bounded, credential-free, path exposed
+ *   P. env bridge             — secrets.json → process.env; never a value in a response
  *
  * Run:  D:\nodejs\node.exe scripts\smoke.mjs
  */
 
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -101,6 +102,7 @@ import { setServerEnabled } from '../lib/toggle.js';
 import { listServers } from '../lib/servers.js';
 import { apply, inject as injectedServices, name as pluginName } from '../lib/index.js';
 import { captureSnapshot, lastSnapshotPath, scheduleSnapshot } from '../lib/snapshot.js';
+import { applyEnvBridge, envBridgeSnapshot, resetEnvBridge } from '../lib/env-bridge.js';
 
 let failures = 0;
 const check = (label, condition, detail = '') => {
@@ -1313,6 +1315,152 @@ ${overrideBlock}- id: plugin-market
       else process.env.DSH_HOME = previousHome;
       if (previousProfile === undefined) delete process.env.DSH_PROFILE;
       else process.env.DSH_PROFILE = previousProfile;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  // ------------------------------------------- P. environment variable bridge
+  section('P. environment variable bridge');
+  {
+    const dir = await mkdtemp(join(tmpdir(), 'mcp-manager-envb-'));
+    const secretsDir = join(dir, 'data', 'mcp-manager');
+    const secretsFile = join(secretsDir, 'secrets.json');
+    const patchPath = join(dir, 'cordis.patch.yml');
+    await mkdir(secretsDir, { recursive: true });
+    await writeFile(patchPath, '- id: ui-theme\n  config: {}\n', 'utf8');
+
+    /** A context complete enough for `apply` plus a warning sink. */
+    const makeCtx = () => {
+      const warnings = [];
+      const routes = [];
+      const disposers = [];
+      const ctx = {
+        configEditor: { documentPath: patchPath, entries: () => [], configuration: () => [] },
+        pluginManager: { listPlugins: async () => [] },
+        tools: { schemas: () => [] },
+        subprocess: {},
+        connection: { requestRejection: () => undefined },
+        webServer: { register: (route) => { routes.push(route); return () => {}; } },
+        effect(fn) {
+          const dispose = fn();
+          disposers.push(dispose);
+          return dispose;
+        },
+        logger: { warn: (message) => warnings.push(message) },
+      };
+      return { ctx, warnings, routes, disposers };
+    };
+
+    try {
+      resetEnvBridge();
+      const missing = applyEnvBridge(makeCtx().ctx);
+      check(
+        'a missing secrets.json is a no-op',
+        missing.exists === false && missing.error === null && missing.configured.length === 0 && missing.injected.length === 0 && missing.skipped.length === 0,
+        JSON.stringify(missing),
+      );
+      check('the bridge reports the path it reads', missing.file === secretsFile, missing.file);
+
+      await writeFile(secretsFile, JSON.stringify({ ENVB_ALPHA: 'alpha-value-1', ENVB_BETA: 'beta-value-2' }), 'utf8');
+      const normal = applyEnvBridge(makeCtx().ctx);
+      check('every valid entry is configured', JSON.stringify(normal.configured) === JSON.stringify(['ENVB_ALPHA', 'ENVB_BETA']), JSON.stringify(normal.configured));
+      check(
+        'missing variables are injected into process.env',
+        JSON.stringify(normal.injected) === JSON.stringify(['ENVB_ALPHA', 'ENVB_BETA']) && process.env.ENVB_ALPHA === 'alpha-value-1' && process.env.ENVB_BETA === 'beta-value-2',
+      );
+      check('the bridge result carries no secret value', !JSON.stringify(normal).includes('alpha-value-1') && !JSON.stringify(normal).includes('beta-value-2'));
+      check('the last bridge result is exposed as module state', envBridgeSnapshot() === normal);
+      delete process.env.ENVB_ALPHA;
+      delete process.env.ENVB_BETA;
+
+      process.env.ENVB_EXISTING = 'host-value';
+      await writeFile(secretsFile, JSON.stringify({ ENVB_EXISTING: 'file-value' }), 'utf8');
+      const existing = applyEnvBridge(makeCtx().ctx);
+      check('an existing variable is never overwritten', process.env.ENVB_EXISTING === 'host-value' && !existing.injected.includes('ENVB_EXISTING'));
+      check(
+        'a pre-existing variable is reported as already-set',
+        existing.skipped.some((entry) => entry.key === 'ENVB_EXISTING' && entry.reason === 'already-set'),
+        JSON.stringify(existing.skipped),
+      );
+      check('an already-set variable is still listed as configured', existing.configured.includes('ENVB_EXISTING'));
+      delete process.env.ENVB_EXISTING;
+
+      await writeFile(
+        secretsFile,
+        JSON.stringify({ 'BAD-KEY': 'x', GOOD_KEY: 'good-value', EMPTY: '', NUMBER: 5, NOTHING: null, SPACES: '   ' }),
+        'utf8',
+      );
+      const invalidHost = makeCtx();
+      const invalid = applyEnvBridge(invalidHost.ctx);
+      const reasons = new Map(invalid.skipped.map((entry) => [entry.key, entry.reason]));
+      check('an invalid key name is skipped and reported', reasons.get('BAD-KEY') === 'invalid-key');
+      check(
+        'empty, whitespace, and non-string values are skipped',
+        reasons.get('EMPTY') === 'invalid-value' && reasons.get('SPACES') === 'invalid-value' && reasons.get('NUMBER') === 'invalid-value' && reasons.get('NOTHING') === 'invalid-value',
+      );
+      check('valid entries next to invalid ones are still injected', invalid.injected.includes('GOOD_KEY') && process.env.GOOD_KEY === 'good-value');
+      check('the result carries no value from the file', !JSON.stringify(invalid).includes('good-value'));
+      check('skipped entries are warned about by name only', invalidHost.warnings.some((message) => message.includes('BAD-KEY') && !message.includes('good-value')));
+      delete process.env.GOOD_KEY;
+
+      await writeFile(secretsFile, '{ this is not json', 'utf8');
+      const badHost = makeCtx();
+      const bad = applyEnvBridge(badHost.ctx);
+      check('bad JSON is reported, not thrown', bad.exists === true && typeof bad.error === 'string' && bad.error.includes('not valid JSON'));
+      check('bad JSON injects nothing', bad.injected.length === 0 && bad.configured.length === 0);
+      check('bad JSON warns exactly once', badHost.warnings.length === 1, String(badHost.warnings.length));
+      check('the warning quotes no file content', !badHost.warnings.join('\n').includes('this is not json'), badHost.warnings.join(' | '));
+
+      await writeFile(secretsFile, JSON.stringify(['not', 'an', 'object']), 'utf8');
+      const arrayResult = applyEnvBridge(makeCtx().ctx);
+      check('a non-object secrets file is rejected', typeof arrayResult.error === 'string' && arrayResult.injected.length === 0 && arrayResult.error.includes('JSON object'));
+
+      // End to end: apply() runs the bridge synchronously before registering routes,
+      // and neither the /servers response nor the diagnostics snapshot may carry values.
+      const secretValue = 'super-secret-token-value';
+      await writeFile(secretsFile, JSON.stringify({ ENVB_SMOKE_TOKEN: secretValue }), 'utf8');
+      delete process.env.ENVB_SMOKE_TOKEN;
+      const host = makeCtx();
+      const returned = apply(host.ctx);
+      check('apply returns synchronously (the bridge never blocks it)', returned === undefined);
+      check('apply injects the variable before any route exists', process.env.ENVB_SMOKE_TOKEN === secretValue);
+      check('module state exposes only the key name', envBridgeSnapshot()?.injected.includes('ENVB_SMOKE_TOKEN') === true && !JSON.stringify(envBridgeSnapshot()).includes(secretValue));
+
+      const serversRoute = host.routes.find((route) => route.path === '/mcp-manager/api/servers');
+      check('apply still registers the servers route', serversRoute !== undefined);
+      const serversResponse = mockResponse();
+      await serversRoute.handler({ method: 'GET', headers: {} }, serversResponse);
+      const serversBody = JSON.parse(serversResponse.body);
+      check(
+        'GET /servers reports the env bridge state',
+        serversResponse.statusCode === 200 &&
+          serversBody.envBridge !== null &&
+          serversBody.envBridge.file === secretsFile &&
+          serversBody.envBridge.injected.includes('ENVB_SMOKE_TOKEN'),
+        JSON.stringify(serversBody.envBridge),
+      );
+      check('GET /servers never contains the secret value', !serversResponse.body.includes(secretValue));
+
+      const snapshotPath = await captureSnapshot(host.ctx, { profileDir: dir });
+      const snapshotText = await readFile(snapshotPath, 'utf8');
+      const snapshot = JSON.parse(snapshotText);
+      check('the diagnostics snapshot records the bridge state', snapshot.backend?.envBridge?.injected?.includes('ENVB_SMOKE_TOKEN') === true);
+      check('the diagnostics snapshot never contains the secret value', !snapshotText.includes(secretValue));
+
+      for (const dispose of host.disposers) {
+        try {
+          dispose?.();
+        } catch {
+          /* disposal must not fail the test */
+        }
+      }
+      delete process.env.ENVB_SMOKE_TOKEN;
+    } finally {
+      delete process.env.ENVB_ALPHA;
+      delete process.env.ENVB_BETA;
+      delete process.env.ENVB_EXISTING;
+      delete process.env.GOOD_KEY;
+      delete process.env.ENVB_SMOKE_TOKEN;
       await rm(dir, { recursive: true, force: true });
     }
   }
