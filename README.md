@@ -1,11 +1,15 @@
 # dsh-mcp-manager
 
+**dsh-mcp-manager** is a plugin for **DeepSeek Harness (DSH)** that adds a **Settings → MCP Servers** page:
+list, enable/disable, edit, add, remove, probe and import/export the profile's MCP servers without
+hand-editing `cordis.patch.yml`. It installs into a DSH profile as a plugin bundle and registers the page
+in the Settings sidebar. Licensed under MIT.
+
 DSH（DeepSeek Harness）桌面端插件：**设置 → MCP 服务器** 管理面板。
 不用再手改 `cordis.patch.yml`，在设置页里看清单、启停、编辑、新增、删除、测连接、导入导出。
 
 - 目标宿主：**DSH 0.2.1-rc.2**（Electron 桌面版，profile=desktop）
 - 依赖：`yaml`（读/写 profile 补丁）
-- 设计依据：`docs/mcp-manager/spec.md`（契约）、`docs/mcp-manager/dsh-api-0.2.1.md`（宿主能力核验）
 
 ## 它做什么
 
@@ -24,19 +28,32 @@ DSH（DeepSeek Harness）桌面端插件：**设置 → MCP 服务器** 管理�
 
 ## 安装
 
-```powershell
-# 在包目录内打包（必须用 tarball 安装：profile 只对真实目录做 @deepseek-ai/* 模块拦截）
-D:\nodejs\npm.cmd pack --pack-destination ..\..\migration\dist
+宿主只对**真实目录**做 `@deepseek-ai/*` 模块拦截，所以请以 tarball 形式安装，不要直接拷贝源码目录：
 
-# 再经宿主插件管理器安装（本会话用 plugin_manager 工具；GUI 的「插件」页安装同一个 .tgz 等价）
-#   plugin_manager({ action: 'install_bundle', target: '<abs>/migration/dist/dsh-mcp-manager-0.1.0.tgz' })
+```bash
+git clone https://github.com/sanqiuyef/dsh-mcp-manager.git
+cd dsh-mcp-manager
+npm pack          # 生成 dsh-mcp-manager-<version>.tgz
 ```
 
-装好后：设置 → 左侧出现「**MCP 服务器**」（order 30）。改代码后的迭代流程：改源码 → 递增版本号 → 重新 `npm pack` → 重装 tarball。
+再用 DSH 的插件管理器安装这个 tarball，任选一条：
 
-**当前状态（2026-10-18）**：已装入 desktop profile（`dsh-mcp-manager@0.1.3`，`application: applied` 热生效），
-host 条目与 `settings.section` 注册均已在运行宿主中确认；真机诊断快照见
-`<profile>/data/mcp-manager/snapshot-*.json`。详细证据与待验证项见 `docs/mcp-manager/verification.md`。
+- **Web GUI**：设置 → 插件 → 安装，选中刚生成的 `.tgz`；
+- **宿主工具**：`plugin_manager({ action: 'install_bundle', target: '<abs>/dsh-mcp-manager-0.1.6.tgz' })`；
+- **profile bundle 安装入口**：本包自带 `cordis.patch.yml`（`package.json` 的 `dsh.bundle.patch`），
+  经 bundle 方式安装后会自动挂载 host 路由与设置页。
+
+装好后：设置 → 左侧出现「**MCP 服务器**」（order 30）。迭代流程：改源码 → 递增版本号 → 重新 `npm pack` → 重装 tarball。
+
+## 测试
+
+离线断言，不依赖运行中的宿主（需要 Node.js ≥ 20）：
+
+```bash
+node --check client/client.js   # 浏览器半区语法检查
+node client/selfcheck.mjs       # 插件注册 / 本地化词典键集 / 导航装饰逻辑（假宿主）
+node scripts/smoke.mjs          # YAML 渲染往返、探测、安全、导入导出
+```
 
 ## 环境变量桥（0.1.3）
 
@@ -71,11 +88,10 @@ effect 清理器会删除插入的图形、恢复齿轮显示、断开 observer�
 
 **移除条件（重要）**：一旦 `settings.section` 的注册参数支持 `icon`，就应**整段删除**
 `NAV_PANEL_SELECTOR` / `NAV_GLYPH_ATTR` / `NAV_GLYPH` / `navGlyphElement` / `decorateNavRow` /
-`installNavGlyph` 这 6 个定义与 `apply()` 里那个 `settings-nav glyph` effect，改为在注册参数里声明 `icon`
-（给上游的最小补丁草案见工作区根的 `docs/nav-icon/设置导航图标改动规范.md` 附录，该目录不在本包内）。
+`installNavGlyph` 这 6 个定义与 `apply()` 里那个 `settings-nav glyph` effect，改为在注册参数里声明 `icon`。
 
-**外观未经浏览器验证**：本会话拿不到已认证页面（`http://127.0.0.1:61579` 直连 401）。
-`client/selfcheck.mjs` 只离线断言「只装饰自己那一行 + 清理能还原」的逻辑，**不是视觉验证**。
+**验证范围**：`client/selfcheck.mjs` 只离线断言「只装饰自己那一行 + 清理能还原」的逻辑，
+**不是视觉验证**；本仓库不含浏览器视觉快照。
 
 ## 主题 token 修正（0.1.5）
 
@@ -87,14 +103,9 @@ effect 清理器会删除插入的图形、恢复齿轮显示、断开 observer�
 | `--dsw-alias-label-error` | `--dsw-alias-state-error-primary`（浅色 `--dsw-static-red-600` / 深色 `--dsw-static-red-400`；宿主设置页自用同款） | 13 |
 | `--dsw-font-mono` | `--ds-font-family-code`（主题的等宽栈） | 9 |
 
-现已全部替换为宿主 token，未引入字面量兜底。核对方式（可重复，升级 DSH 后请重跑）：
-
-```powershell
-D:\nodejs\node.exe scripts\lint-theme-tokens.mjs
-```
-
-该工作区脚本把两个插件 `client.js` 里的每个 `var(--…)` 与 `_recon/asar`（= 本机 `app.asar` 解包副本）中
-真实存在的 token 定义逐一比对，出现未定义的名字即非零退出（本次修复前它会报出上面这两个）。
+现已全部替换为宿主 token，未引入字面量兜底。本包 `client/client.js` 里的每个 `var(--…)` 都应存在于
+宿主主题的 token 定义中；**升级 DSH 后请重新核对**（把 `var(--…)` 名字与所装 DSH 的主题 token 定义逐一比对，
+出现未定义的名字即为回归）。
 
 ## 结构
 
@@ -110,7 +121,8 @@ D:\nodejs\node.exe scripts\lint-theme-tokens.mjs
 | `lib/security.js` | `requestRejection`、POST/JSON/64KiB/no-store |
 | `lib/env-bridge.js` | 环境变量桥：`<profile>/data/mcp-manager/secrets.json` → `process.env`（只补缺失键） |
 | `client/client.js` | 浏览器设置页（`settings.section`，手写 CJS，无构建） |
-| `scripts/smoke.mjs` | 离线断言（不依赖宿主） |
+| `client/selfcheck.mjs` | 浏览器半区离线自检（假宿主） |
+| `scripts/smoke.mjs` | host 半区离线断言（不依赖宿主） |
 
 ## 已知限制
 
@@ -119,6 +131,7 @@ D:\nodejs\node.exe scripts\lint-theme-tokens.mjs
 - 编辑任一服务器都会让该条目整实例重挂（子进程重启、工具短暂消失），页面会提示。
 - 新增/删除没有官方运行时 API，只能改 profile 补丁；写坏的文件在**下次启动**时会让组合失败，
   因此写前备份、写后校验、失败自动回滚，且删除对非本插件管理的行降级为「停用」。
+- 设置导航图标依赖外壳 DOM 结构（见上节），外壳改版后装饰会静默失效（功能不受影响）。
 - 不支持：云端同步、OAuth、官方 MCP 市场、workspace 作用域、工具浏览器/资源浏览。
 
 ## 卸载
@@ -126,3 +139,7 @@ D:\nodejs\node.exe scripts\lint-theme-tokens.mjs
 `plugin_manager({ action: 'remove_bundle', target: 'dsh-mcp-manager' })`。
 本插件通过管理块写入的服务器行会留在 profile 补丁里（可用外部编辑器手工清掉），这是刻意的：
 卸载管理工具不应连带删除用户数据。
+
+## License
+
+MIT © 2026 sanqiuyef — 见 [LICENSE](./LICENSE)。

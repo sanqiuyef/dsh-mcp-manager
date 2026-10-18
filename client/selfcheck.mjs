@@ -28,7 +28,7 @@
  *     nav row (hiding the shipped gear, inserting one 16×16 glyph) and the
  *     disposer restores that row untouched.
  *
- * Usage:  D:\nodejs\node.exe client/selfcheck.mjs
+ * Usage:  node client/selfcheck.mjs
  */
 
 import { readFileSync } from 'node:fs'

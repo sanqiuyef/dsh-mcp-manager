@@ -32,7 +32,6 @@ window.__ModuleLoader__.load({
     const NS = 'mcpManager'
     const API_BASE = '/mcp-manager/api'
     const STYLE_ID = PLUGIN_ID + '/styles'
-    const SOURCE_DIR = 'D:\\cherry-workplace\\mcp_servers'
     const NAME_PATTERN = /^[A-Za-z0-9_-]{1,32}$/
     const IDENTIFIER_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/
     const KEY_PATTERN = /^\S+$/
@@ -46,7 +45,7 @@ window.__ModuleLoader__.load({
       title: 'MCP servers',
       subtitle: 'Manage the MCP servers of this profile. Changes are written to the profile patch and applied hot.',
       totals: '{servers} servers · {enabled} enabled · {tools} tools',
-      sourceDirHint: 'Local MCP server sources: ' + SOURCE_DIR,
+      sourceDirHint: 'Local MCP server sources live wherever you keep them.',
 
       'toolbar.refresh': 'Refresh',
       'toolbar.add': 'Add',
@@ -262,7 +261,7 @@ window.__ModuleLoader__.load({
       title: 'MCP 服务器',
       subtitle: '管理本 profile 的 MCP 服务器。改动会写入 profile 补丁并热应用。',
       totals: '共 {servers} 台 · 已启用 {enabled} 台 · 工具 {tools} 个',
-      sourceDirHint: '本机 MCP 服务器源码目录：' + SOURCE_DIR,
+      sourceDirHint: '本机 MCP 服务器源码目录由使用者自行维护。',
 
       'toolbar.refresh': '刷新',
       'toolbar.add': '新增',
@@ -2373,7 +2372,7 @@ window.__ModuleLoader__.load({
                     id: 'mw-cwd',
                     value: form.cwd,
                     mono: true,
-                    placeholder: 'D:\\cherry-workplace\\mcp_servers\\my-server',
+                    placeholder: '%USERPROFILE%\\mcp-servers\\my-server',
                     disabled: readOnly,
                     onChange: function (value) {
                       updateField('cwd', value)

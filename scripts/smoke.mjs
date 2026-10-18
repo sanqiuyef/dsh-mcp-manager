@@ -33,12 +33,12 @@
  *   O. startup snapshot       — written, bounded, credential-free, path exposed
  *   P. env bridge             — secrets.json → process.env; never a value in a response
  *
- * Run:  D:\nodejs\node.exe scripts\smoke.mjs
+ * Run:  node scripts/smoke.mjs
  */
 
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -135,7 +135,7 @@ const mockResponse = () => ({
 const sampleServer = (overrides = {}) => ({
   serverName: 'demo',
   transport: 'stdio',
-  command: 'D:\\anaconda3\\python.exe',
+  command: 'C:\\Python311\\python.exe',
   args: ['-X', 'utf8', '-m', 'demo_server'],
   cwd: 'D:\\work\\demo',
   env: {
@@ -166,7 +166,7 @@ const main = async () => {
     check('the row names the mcp-client package', row.name === MCP_CLIENT_PACKAGE);
     check('the transport survives', row.config?.transport === 'stdio');
     check('the serverName survives', row.config?.serverName === 'demo');
-    check('windows paths keep their backslashes', row.config?.command === 'D:\\anaconda3\\python.exe', String(row.config?.command));
+    check('windows paths keep their backslashes', row.config?.command === 'C:\\Python311\\python.exe', String(row.config?.command));
     check('args keep their order and count', JSON.stringify(row.config?.args) === JSON.stringify(['-X', 'utf8', '-m', 'demo_server']));
     check('cwd survives', row.config?.cwd === 'D:\\work\\demo');
     check('a value that looks like a boolean stays a string', row.config?.env?.KMP_DUPLICATE_LIB_OK === 'TRUE', JSON.stringify(row.config?.env?.KMP_DUPLICATE_LIB_OK));
@@ -1059,7 +1059,9 @@ ${overrideBlock}- id: plugin-market
   // ------------------------------------------------------ M. real profile dry run
   section('M. real profile (read-only)');
   {
-    const real = 'C:\\Users\\PC\\.dsh\\profiles\\desktop\\cordis.patch.yml';
+    const real =
+      process.env.MCP_MANAGER_REAL_PATCH ??
+      join(homedir(), '.dsh', 'profiles', process.env.DSH_PROFILE ?? 'desktop', 'cordis.patch.yml');
     try {
       const before = await readFile(real, 'utf8');
       const info = inspectPatch(before);
