@@ -120,7 +120,7 @@ window.__ModuleLoader__.load({
       'action.editDisabled': 'Read-only: this server has no patch row',
       'action.view': 'View',
       'action.delete': 'Delete',
-      'action.deleteDisabled': 'Only rows in the manager block can be deleted; disable this server instead',
+      'action.deleteDisabled': 'This row has no profile patch row, so it cannot be deleted; disable it instead.',
       'action.enable': 'Enable',
       'action.disable': 'Disable',
 
@@ -138,7 +138,8 @@ window.__ModuleLoader__.load({
       'toast.migrateSkipped': 'Migrated {migrated} secret(s); {skipped} could not be expressed as env names.',
       'toast.added': 'Server added.',
       'toast.addPending': 'Server written; waiting for the hot apply to be observed.',
-      'toast.deleted': 'Server deleted.',
+      'toast.deleted': 'Deleted {name}.',
+      'toast.deletedWithBackup': 'Deleted {name} (backup: {backup}).',
       'toast.probeOk': 'Probe succeeded ({tools} tools).',
       'toast.probeFail': 'Probe failed.',
       'toast.probeCancelled': 'Probe cancelled.',
@@ -148,8 +149,9 @@ window.__ModuleLoader__.load({
       'toast.dismiss': 'Dismiss',
 
       'confirm.deleteTitle': 'Delete MCP server',
-      'confirm.deleteBody': 'Delete “{name}” from the profile patch? This cannot be undone.',
-      'confirm.deleteNote': 'Deleting removes the row from the manager block and unloads the server.',
+      'confirm.deleteBodyManaged': 'Remove the server row “{name}” from the plugin manager block; applied hot. The patch is backed up first.',
+      'confirm.deleteBodyHandwritten': 'Delete the hand-written row “{name}” from the profile patch (including same-id disabled/config override rows); applied hot. The patch is backed up first.',
+      'confirm.deleteConsequences': 'This unloads the server and unregisters its tools.',
       'confirm.delete': 'Delete',
       'confirm.cancel': 'Cancel',
       'confirm.discardTitle': 'Discard changes?',
@@ -169,7 +171,7 @@ window.__ModuleLoader__.load({
       'form.serverName': 'Server name',
       'form.serverNameHint': 'Must match ^[A-Za-z0-9_-]{1,32}$ and be unique. Tool names become mcp__<name>__*.',
       'form.serverNameLocked': 'Renaming requires deleting and recreating the server.',
-      'form.patchRowHint': 'Patch row id: {patchId} — outside the manager block, so it can only be disabled.',
+      'form.patchRowHint': 'Patch row id: {patchId} — hand-written row; deleting it also removes same-id override rows.',
       'form.transport': 'Transport',
       'form.transport.stdio': 'stdio',
       'form.transport.http': 'Streamable HTTP',
@@ -334,7 +336,7 @@ window.__ModuleLoader__.load({
       'action.editDisabled': '只读：该服务器没有 profile 补丁行',
       'action.view': '查看',
       'action.delete': '删除',
-      'action.deleteDisabled': '仅管理块内的行可删除；此行请使用停用',
+      'action.deleteDisabled': '该行没有 profile 补丁行，不可寻址；请使用停用。',
       'action.enable': '启用',
       'action.disable': '停用',
 
@@ -352,7 +354,8 @@ window.__ModuleLoader__.load({
       'toast.migrateSkipped': '已迁移 {migrated} 项；{skipped} 项无法转换为环境变量名。',
       'toast.added': '服务器已新增。',
       'toast.addPending': '已写入，正在等待热应用被观察到。',
-      'toast.deleted': '服务器已删除。',
+      'toast.deleted': '已删除 {name}。',
+      'toast.deletedWithBackup': '已删除 {name}（备份：{backup}）。',
       'toast.probeOk': '探测成功（工具 {tools} 个）。',
       'toast.probeFail': '探测失败。',
       'toast.probeCancelled': '已取消探测。',
@@ -362,8 +365,9 @@ window.__ModuleLoader__.load({
       'toast.dismiss': '关闭提示',
 
       'confirm.deleteTitle': '删除 MCP 服务器',
-      'confirm.deleteBody': '从 profile 补丁中删除「{name}」？此操作不可撤销。',
-      'confirm.deleteNote': '删除会移除管理块内该行并卸载服务器。',
+      'confirm.deleteBodyManaged': '将从插件管理块中移除该服务器行「{name}」，热生效；删除前自动备份补丁。',
+      'confirm.deleteBodyHandwritten': '将删除 profile 补丁里这行手写配置「{name}」（含同 id 的 disabled/config 覆盖行），热生效；删除前自动备份补丁。',
+      'confirm.deleteConsequences': '该操作会卸载该服务器并注销其工具。',
       'confirm.delete': '删除',
       'confirm.cancel': '取消',
       'confirm.discardTitle': '放弃未保存的更改？',
@@ -383,7 +387,7 @@ window.__ModuleLoader__.load({
       'form.serverName': '服务器名称',
       'form.serverNameHint': '需匹配 ^[A-Za-z0-9_-]{1,32}$ 且唯一。工具名将变为 mcp__<name>__*。',
       'form.serverNameLocked': '重命名需要先删除再重建该服务器。',
-      'form.patchRowHint': '补丁行 id：{patchId}（位于管理块之外，只能停用）。',
+      'form.patchRowHint': '补丁行 id：{patchId}（手写行；删除时连同 id 的覆盖行一起清理）。',
       'form.transport': '传输方式',
       'form.transport.stdio': 'stdio',
       'form.transport.http': 'Streamable HTTP',
@@ -541,6 +545,16 @@ window.__ModuleLoader__.load({
       } catch (error) {
         return String(Date.now())
       }
+    }
+
+    /** Last path segment of a host-side file path (Windows or POSIX separators). */
+    function baseName(filePath) {
+      const raw = str(filePath)
+      if (!raw) return ''
+      const parts = raw.split(/[\\/]+/).filter(function (part) {
+        return part.length > 0
+      })
+      return parts.length ? parts[parts.length - 1] : ''
     }
 
     /* ------------------------------------------------------------------ *
@@ -1171,6 +1185,7 @@ window.__ModuleLoader__.load({
           title: props.title,
           'aria-label': props['aria-label'],
           'aria-busy': props.busy ? 'true' : undefined,
+          autoFocus: props.autoFocus === true ? true : undefined,
           onClick: props.onClick,
         },
         icon ? h(icon, { size: props.size === 'sm' ? 13 : 14 }) : null,
@@ -1486,7 +1501,9 @@ window.__ModuleLoader__.load({
       const running = !!(probeState && probeState.running)
       const detailOpen = props.detailOpen === true
       const canEdit = !!row.patchId
-      const canDelete = isManagedRow(row) && !!row.patchId
+      // Both manager-block and hand-written patch rows are deletable; only a row
+      // with no patch id at all is unaddressable and falls back to "disable".
+      const canDelete = !!row.patchId
       const canProbe = props.canProbe === true
       const key = props.rowKey || rowKey(row)
 
@@ -1968,7 +1985,14 @@ window.__ModuleLoader__.load({
         busy: props.busy,
         onCancel: props.onCancel,
         footer: [
-          h(Btn, { key: 'cancel', onClick: props.onCancel, disabled: props.busy, children: props.cancelLabel || t('confirm.cancel') }),
+          // Safe default: a destructive confirmation opens focused on Cancel.
+          h(Btn, {
+            key: 'cancel',
+            autoFocus: true,
+            onClick: props.onCancel,
+            disabled: props.busy,
+            children: props.cancelLabel || t('confirm.cancel'),
+          }),
           h(Btn, {
             key: 'confirm',
             variant: props.danger ? 'danger' : 'primary',
@@ -2878,10 +2902,12 @@ window.__ModuleLoader__.load({
           return previous ? Object.assign({}, previous, { busy: true }) : previous
         })
         apiRequest('/servers/remove', { method: 'POST', body: { patchId: row.patchId } })
-          .then(function () {
+          .then(function (response) {
             if (!mounted.current) return
             setConfirm(null)
-            pushToast(t('toast.deleted'), 'success')
+            const backup = response && typeof response.backupPath === 'string' ? baseName(response.backupPath) : ''
+            if (backup) pushToast(t('toast.deletedWithBackup', { name: row.serverName, backup: backup }), 'success')
+            else pushToast(t('toast.deleted', { name: row.serverName }), 'success')
             return load()
           })
           .catch(function (error) {
@@ -3097,8 +3123,14 @@ window.__ModuleLoader__.load({
                   : h(
                       'div',
                       null,
-                      h('p', { className: 'mw-modal-text' }, t('confirm.deleteBody', { name: confirm.row.serverName })),
-                      h('p', { className: 'mw-hint' }, t('confirm.deleteNote')),
+                      h(
+                        'p',
+                        { className: 'mw-modal-text' },
+                        t(isManagedRow(confirm.row) ? 'confirm.deleteBodyManaged' : 'confirm.deleteBodyHandwritten', {
+                          name: confirm.row.serverName,
+                        }),
+                      ),
+                      h('p', { className: 'mw-hint' }, t('confirm.deleteConsequences')),
                     ),
               confirmLabel: confirm.kind === 'discard' ? t('confirm.discard') : t('confirm.delete'),
               cancelLabel: confirm.kind === 'discard' ? t('confirm.keepEditing') : t('confirm.cancel'),

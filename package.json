@@ -1,6 +1,6 @@
 {
   "name": "dsh-mcp-manager",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "MCP server manager for DeepSeek Harness — a Settings page to list, enable/disable, edit, add, remove, probe and import/export the profile's MCP servers without hand-editing YAML. · DSH MCP 服务器管理面板",
   "type": "module",
   "main": "lib/index.js",

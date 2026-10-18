@@ -23,11 +23,16 @@
  *   I. update                 — inherited base (never evaluated), `{__keep}`, migration
  *   J. add/remove end to end  — real file writes in a temp profile, compose simulation,
  *                               rollback when the host never composes the row
+ *   J2. hand-written removal  — byte-exact node-range surgery, emptied insert lists,
+ *                               non-MCP / orphan / flow-style / broken-patch refusals,
+ *                               rollback when the entry survives
  *   K. security/HTTP helpers  — rejection gate, method, content type, body cap, redaction
  *   L. diagnostics            — duplicate/invalid names, missing command/env, literal secret
  *   M. the real profile       — read-only dry run (skipped when unreachable)
+ *   N. route wiring           — the eight contract routes end to end
+ *   O. startup snapshot       — written, bounded, credential-free, path exposed
  *
- * Run:  D:\nodejs\node.exe packages\dsh-mcp-manager\scripts\smoke.mjs
+ * Run:  D:\nodejs\node.exe scripts\smoke.mjs
  */
 
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -709,6 +714,9 @@ const main = async () => {
 
       const removed = await removeManagedServer({ configEditor: { documentPath: patchPath }, pluginManager: composeLike() }, 'mcp-client-demo');
       check('a remove reports removed', removed.removed === true);
+      check('a managed remove reports source=managed', removed.source === 'managed', String(removed.source));
+      check('a managed remove reports its backup path', typeof removed.backupPath === 'string' && existsSync(removed.backupPath), String(removed.backupPath));
+      check('the backup holds the pre-removal document', (await readFile(removed.backupPath, 'utf8')) === afterAdd);
       const afterRemove = await readFile(patchPath, 'utf8');
       check('removal keeps the original bytes', afterRemove.startsWith(original));
       check('the row is gone from the block', !afterRemove.includes('mcp-client-demo'));
@@ -727,14 +735,14 @@ const main = async () => {
       check('the rollback restored the document', afterRollback === afterRemove);
       check('the rolled-back row is absent', !afterRollback.includes('mcp-client-ghost'));
 
-      // A hand-written row is never deleted physically.
+      // An id that exists nowhere is still a 404.
       let outside = '';
       try {
-        await removeManagedServer({ configEditor: { documentPath: patchPath }, pluginManager: composeLike() }, 'mcp-client-handwritten');
+        await removeManagedServer({ configEditor: { documentPath: patchPath }, pluginManager: composeLike() }, 'mcp-client-nonexistent');
       } catch (error) {
         outside = `${error.code}: ${error.message}`;
       }
-      check('deleting an unknown/hand-written row is refused', outside.startsWith('not-found'), outside);
+      check('deleting an unknown row id is refused as not-found', outside.startsWith('not-found'), outside);
 
       // Import end to end: the contract's mapping plus the reported drops.
       const importCtx = { configEditor: { documentPath: patchPath }, pluginManager: composeLike() };
@@ -772,6 +780,198 @@ const main = async () => {
         badMode = `${error.code}: ${error.message}`;
       }
       check('an unsupported import mode is a bad-request', badMode.startsWith('bad-request'), badMode);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  // ------------------------------------ J2. hand-written row deletion
+  section('J2. hand-written row deletion');
+  {
+    const dir = await mkdtemp(join(tmpdir(), 'mcp-manager-handwritten-'));
+    /** A manager that reports a live entry for every MCP row the patch currently declares. */
+    const composeFrom = (path) => ({
+      listPlugins: async () => {
+        const info = inspectPatch(await readFile(path, 'utf8'));
+        return info.rows
+          .filter((row) => row.nested && row.isMcpClient)
+          .map((row) => ({
+            entryId: `include:${row.patchId}`,
+            patchId: row.patchId,
+            moduleName: MCP_CLIENT_PACKAGE,
+            enabled: true,
+            fiberPhase: 'active',
+          }));
+      },
+    });
+    try {
+      // --- the main fixture: a hand-written row in a shared insert list, plus its
+      // top-level disabled override and a neighbouring row that must survive.
+      const mainPath = join(dir, 'cordis.patch.yml');
+      const rowBlock = `    - id: mcp-client-hand
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: 'hand'
+        command: 'python'
+`;
+      const overrideBlock = `- id: mcp-client-hand
+  disabled: true
+`;
+      const original = `# profile patch (hand-written row stand-in)
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: light
+# MCP servers live in this insert list
+- insert:
+    # hand-written MCP row below
+${rowBlock}    - id: mcp-client-keep
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: 'keep'
+        command: 'node'
+${overrideBlock}- id: plugin-market
+  name: "@deepseek-ai/dsh-plugin-market"
+  config:
+    indexes: []
+`;
+      const expected = original.replace(rowBlock, '').replace(overrideBlock, '');
+      await writeFile(mainPath, original, 'utf8');
+
+      const handCtx = { configEditor: { documentPath: mainPath }, pluginManager: composeFrom(mainPath) };
+      const deleted = await removeManagedServer(handCtx, 'mcp-client-hand');
+      check('a hand-written row can be deleted', deleted.removed === true);
+      check('the removal reports source=handwritten', deleted.source === 'handwritten', String(deleted.source));
+      check('the removal reports its backup path', typeof deleted.backupPath === 'string' && existsSync(deleted.backupPath), String(deleted.backupPath));
+      check('the backup holds the pre-removal document', (await readFile(deleted.backupPath, 'utf8')) === original);
+
+      const after = await readFile(mainPath, 'utf8');
+      check('the rewritten document equals original minus the row and its override (byte-exact)', after === expected, JSON.stringify(after.slice(0, 120)));
+      check(
+        'exactly the target row plus its override disappear (line count)',
+        original.split('\n').length - after.split('\n').length === 8,
+        `${original.split('\n').length}->${after.split('\n').length}`,
+      );
+      check('the neighbouring hand-written row is untouched', after.includes("    - id: mcp-client-keep\n      name: '@deepseek-ai/dsh-mcp-client'"));
+      check('the comment above the removed row survives', after.includes('    # hand-written MCP row below'));
+      check('the unrelated top-level rows are untouched', after.includes('- id: plugin-market\n  name: "@deepseek-ai/dsh-plugin-market"'));
+      check('the same-id disabled override is gone', !after.includes('- id: mcp-client-hand'));
+      check('the rewritten document still parses', inspectPatch(after).ok);
+      check(
+        'the deleted row is gone from the parsed model',
+        !inspectPatch(after).rows.some((row) => row.patchId === 'mcp-client-hand'),
+      );
+      check(
+        'all other row ids survive in order',
+        JSON.stringify(inspectPatch(after).rows.map((row) => row.patchId)) ===
+          JSON.stringify(['ui-theme', 'mcp-client-keep', 'plugin-market']),
+        JSON.stringify(inspectPatch(after).rows.map((row) => row.patchId)),
+      );
+
+      // --- a list that this deletion empties becomes an explicit empty insert list.
+      const soloPath = join(dir, 'solo.patch.yml');
+      const soloOriginal = `# only row in this list
+- insert:
+    - id: mcp-client-solo
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: 'solo'
+        command: 'python'
+- id: tail
+  config: {}
+`;
+      const soloExpected = `# only row in this list
+- insert: []
+- id: tail
+  config: {}
+`;
+      await writeFile(soloPath, soloOriginal, 'utf8');
+      const solo = await removeManagedServer({ configEditor: { documentPath: soloPath }, pluginManager: composeFrom(soloPath) }, 'mcp-client-solo');
+      check('deleting the only row of an insert list succeeds', solo.removed === true);
+      check('an emptied insert list becomes - insert: []', (await readFile(soloPath, 'utf8')) === soloExpected, JSON.stringify(await readFile(soloPath, 'utf8')));
+
+      // --- error branches: nothing is written.
+      const foreignPath = join(dir, 'foreign.patch.yml');
+      const foreignOriginal = "- insert:\n    - id: foreign-row\n      name: '@deepseek-ai/some-other-plugin'\n      config:\n        a: 1\n";
+      await writeFile(foreignPath, foreignOriginal, 'utf8');
+      let foreignError = '';
+      try {
+        await removeManagedServer({ configEditor: { documentPath: foreignPath }, pluginManager: composeFrom(foreignPath) }, 'foreign-row');
+      } catch (error) {
+        foreignError = `${error.code}: ${error.message}`;
+      }
+      check('a non-MCP insert row is refused as not-manageable', foreignError.startsWith('not-manageable'), foreignError);
+      check('the refused non-MCP deletion wrote nothing', (await readFile(foreignPath, 'utf8')) === foreignOriginal);
+
+      const orphanPath = join(dir, 'orphan.patch.yml');
+      const orphanOriginal = '- id: mcp-client-orphan\n  disabled: true\n- id: ui-theme\n  config: {}\n';
+      await writeFile(orphanPath, orphanOriginal, 'utf8');
+      let orphanError = '';
+      try {
+        await removeManagedServer({ configEditor: { documentPath: orphanPath }, pluginManager: composeFrom(orphanPath) }, 'mcp-client-orphan');
+      } catch (error) {
+        orphanError = `${error.code}: ${error.message}`;
+      }
+      check('an override without an insert definition is refused as not-manageable', orphanError.startsWith('not-manageable'), orphanError);
+      check('the refused orphan deletion wrote nothing', (await readFile(orphanPath, 'utf8')) === orphanOriginal);
+
+      // A flow-style insert list cannot be edited line-by-line without taking its
+      // neighbours, so it is refused instead of corrupted.
+      const flowPath = join(dir, 'flow.patch.yml');
+      const flowOriginal = "- insert: [{ id: 'flow-row', name: '@deepseek-ai/dsh-mcp-client', config: { transport: 'stdio', serverName: 'flow', command: 'python' } }, { id: 'flow-keep', name: '@deepseek-ai/dsh-mcp-client', config: { transport: 'stdio', serverName: 'flow-keep', command: 'node' } }]\n";
+      await writeFile(flowPath, flowOriginal, 'utf8');
+      let flowError = '';
+      try {
+        await removeManagedServer({ configEditor: { documentPath: flowPath }, pluginManager: composeFrom(flowPath) }, 'flow-row');
+      } catch (error) {
+        flowError = `${error.code}: ${error.message}`;
+      }
+      check('a row in a flow-style insert list is refused as not-manageable', flowError.startsWith('not-manageable'), flowError);
+      check('the refused flow-style deletion wrote nothing', (await readFile(flowPath, 'utf8')) === flowOriginal);
+
+      const brokenPath = join(dir, 'broken.patch.yml');
+      const brokenOriginal = '- insert:\n    - id: [unclosed\n';
+      await writeFile(brokenPath, brokenOriginal, 'utf8');
+      let brokenError = '';
+      try {
+        await removeManagedServer({ configEditor: { documentPath: brokenPath }, pluginManager: composeFrom(brokenPath) }, 'mcp-client-whatever');
+      } catch (error) {
+        brokenError = `${error.code}: ${error.message}`;
+      }
+      check('deleting from a patch that does not parse is refused as patch-invalid', brokenError.startsWith('patch-invalid'), brokenError);
+      check('the refused broken-patch deletion wrote nothing', (await readFile(brokenPath, 'utf8')) === brokenOriginal);
+
+      // --- rollback: the host keeps reporting the entry after the write.
+      const stuckPath = join(dir, 'stuck.patch.yml');
+      const stuckOriginal = `- insert:
+    - id: mcp-client-stuck
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: 'stuck'
+        command: 'python'
+`;
+      await writeFile(stuckPath, stuckOriginal, 'utf8');
+      const stuckCtx = {
+        configEditor: { documentPath: stuckPath },
+        pluginManager: {
+          listPlugins: async () => [
+            { entryId: 'include:mcp-client-stuck', patchId: 'mcp-client-stuck', moduleName: MCP_CLIENT_PACKAGE, enabled: true, fiberPhase: 'active' },
+          ],
+        },
+      };
+      let rollbackError = '';
+      try {
+        await removeManagedServer(stuckCtx, 'mcp-client-stuck');
+      } catch (error) {
+        rollbackError = `${error.code}: ${error.message}`;
+      }
+      check('a hand-written remove whose entry survives is a write-failed error', rollbackError.startsWith('write-failed'), rollbackError);
+      check('the failed hand-written remove rolled the document back byte-for-byte', (await readFile(stuckPath, 'utf8')) === stuckOriginal);
+      check('the rollback message names the backup', rollbackError.includes('backup:'), rollbackError);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
