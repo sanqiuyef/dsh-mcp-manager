@@ -1,0 +1,7 @@
+# dsh-mcp-manager bundle patch
+#
+# 本文件是 npm 包的 `dsh.bundle.patch` 层：只插入本插件自己的一行宿主条目。
+# 安装后 profile boot 会合并它；改动本文件需要重启 DSH 桌面应用（或由插件管理器热应用）。
+- insert:
+    - id: mcp-manager
+      name: 'dsh-mcp-manager'

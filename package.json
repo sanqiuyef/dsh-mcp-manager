@@ -1,0 +1,44 @@
+{
+  "name": "dsh-mcp-manager",
+  "version": "0.1.1",
+  "description": "MCP server manager for DeepSeek Harness — a Settings page to list, enable/disable, edit, add, remove, probe and import/export the profile's MCP servers without hand-editing YAML. · DSH MCP 服务器管理面板",
+  "type": "module",
+  "main": "lib/index.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.2"
+  },
+  "dependencies": {
+    "yaml": "^2.8.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./client/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "client",
+    "cordis.patch.yml",
+    "README.md",
+    "package.json"
+  ]
+}
